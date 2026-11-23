@@ -236,6 +236,8 @@ canvas{display:block}
     </div>
     <div class="mobile-actions">
       <button class="mobile-action" id="mob-run">Correr</button>
+      <button class="mobile-action" id="mob-ocultar">Ocultar</button>
+      <button class="mobile-action" id="mob-mostrar">Mostrar tudo</button>
       <button class="mobile-action" id="mob-exit">Sair</button>
     </div>
   </div>
@@ -34627,6 +34629,7 @@ function enterTour(){
 }
 function exitTour(){
   tourMode = false;
+  try{ tourSolto = false; ocultarModo = false; document.getElementById('mob-ocultar').classList.remove('on'); }catch(err){}
   document.getElementById('sw-tour').classList.remove('on');
   document.getElementById('tourbar').classList.remove('show');
   document.getElementById('crosshair').classList.remove('show');
@@ -34642,8 +34645,54 @@ function exitTour(){
   orbitApply();
 }
 document.getElementById('row-tour').onclick = ()=> tourMode ? exitTour() : enterTour();
+// Espaço solta o mouse sem sair do tour (para clicar em peças e usar o painel); Espaço de novo volta a olhar
+let tourSolto = false;
 document.addEventListener('pointerlockchange', ()=>{
-  if(!document.pointerLockElement && tourMode) exitTour();
+  if(!document.pointerLockElement && tourMode){
+    if(tourSolto) return;
+    exitTour();
+  }
+});
+window.addEventListener('keydown', e=>{
+  if(!tourMode || e.code!=='Space') return;
+  e.preventDefault();
+  if(document.pointerLockElement){ tourSolto = true; document.exitPointerLock(); tourDragFallback = true;
+    showTourInstructions("<b>Mouse solto</b> · clique numa peça com <b>Ocultar</b> ligado para esconder · ☰ categorias · <b>Espaço</b> volta a olhar"); }
+  else { tourSolto = false; requestTourLock(); }
+});
+
+/* ---------- ocultar peças durante o tour ---------- */
+let ocultarModo = false, ocX = 0, ocY = 0;
+function ocultarNoPonto(x, y){
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNdc.x = ((x-rect.left)/rect.width)*2-1;
+  mouseNdc.y = -((y-rect.top)/rect.height)*2+1;
+  raycaster.setFromCamera(mouseNdc, camera);
+  const hits = raycaster.intersectObjects(allMeshes.filter(m=>m.visible), false);
+  if(!hits.length) return;
+  const src = hits[0].object.userData.srcName || '';
+  if(!src) return;
+  hiddenEls.add(src); applyVisibilityFilters(); buildBusca();
+}
+renderer.domElement.addEventListener('pointerdown', e=>{ if(tourMode){ ocX = e.clientX; ocY = e.clientY; } });
+renderer.domElement.addEventListener('pointerup', e=>{
+  if(!tourMode || !ocultarModo || document.pointerLockElement) return;
+  if(Math.abs(e.clientX-ocX) > 6 || Math.abs(e.clientY-ocY) > 6) return;   // arrastou para olhar
+  ocultarNoPonto(e.clientX, e.clientY);
+});
+document.getElementById('mob-ocultar').addEventListener('click', ev=>{
+  ev.preventDefault(); ev.stopPropagation();
+  ocultarModo = !ocultarModo;
+  ev.currentTarget.classList.toggle('on', ocultarModo);
+  if(ocultarModo && document.pointerLockElement){ tourSolto = true; document.exitPointerLock(); tourDragFallback = true; }
+  showTourInstructions(ocultarModo ? "<b>Ocultar ligado</b> · toque/clique numa peça para esconder" : "Ocultar desligado");
+});
+document.getElementById('mob-mostrar').addEventListener('click', ev=>{
+  ev.preventDefault(); ev.stopPropagation();
+  hiddenEls.clear();
+  Object.values(categories).forEach(c=>{ c.visible = true; });
+  try{ buildCatPanel(); }catch(err){}
+  applyVisibilityFilters(); buildBusca();
 });
 document.addEventListener('mousemove', e=>{
   if(!tourMode) return;
