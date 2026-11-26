@@ -100,6 +100,15 @@ canvas{display:block}
 
 #tourbar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(21,27,35,.9);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:11.5px;color:var(--tx2);backdrop-filter:blur(6px);display:none;text-align:center;line-height:1.5}
 #tourbar b{color:var(--acc2)}
+#mini{position:absolute;right:118px;bottom:14px;width:210px;height:190px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:transparent;display:none;z-index:6;pointer-events:none}
+#mini.show{display:block}
+#mini-nome{position:absolute;left:0;right:0;bottom:0;height:18px;font-size:10.5px;line-height:18px;text-align:center;color:var(--tx2);background:rgba(21,27,35,.95)}
+#pegman,#pegman-fantasma{position:absolute;width:28px;height:40px;cursor:grab;z-index:7;touch-action:none;user-select:none}
+#pegman{right:14px;bottom:14px}
+#pegman-fantasma{position:fixed;pointer-events:none;z-index:99;opacity:.9}
+body.tour-on #pegman{display:none}
+@media (max-width:700px), (pointer:coarse){ #mini{top:70px;bottom:auto;right:10px;width:140px;height:130px} }
+
 #tourbar.show{display:block}
 
 /* ---------- controles móveis ---------- */
@@ -166,6 +175,11 @@ canvas{display:block}
 
     <div class="sec">
       <h2>Pavimentos <button id="btn-level-all">modelo inteiro</button></h2>
+      <div style="display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--tx2);margin:2px 0 8px">
+        <span>Faixa do nível:</span>
+        <label>abaixo <input id="faixa-baixo" type="number" step="0.05" value="0.55" style="width:52px"> m</label>
+        <label>acima <input id="faixa-cima" type="number" step="0.05" value="2.90" style="width:52px"> m</label>
+      </div>
       <div id="f-levels"></div>
     </div>
 
@@ -204,7 +218,7 @@ canvas{display:block}
 
     <div class="sec">
       <h2>Buscar</h2>
-      <input id="q" placeholder="nome do objeto...">
+      <input id="q" placeholder="categoria (ex.: parede, forro)...">
       <div id="f-busca" class="lista-el"></div>
       <h2 style="margin-top:10px">Desativados <button id="btn-hid-all">reativar todos</button></h2>
       <div id="f-ocultos" class="lista-el"></div>
@@ -224,6 +238,8 @@ canvas{display:block}
     <button class="hbtn" id="btn-top" title="Vista de topo">⬒</button>
     <button class="hbtn" id="btn-iso" title="Vista isométrica">⬔</button>
   </div>
+  <div id="mini"><div id="mini-nome"></div></div>
+  <div id="pegman" title="Arraste o bonequinho até o lugar onde quer entrar no tour"><svg viewBox="0 0 28 40" width="28" height="40"><circle cx="14" cy="7" r="6" fill="#f5b400" stroke="#7a5a00" stroke-width="1.2"/><path d="M7 15h14l-1.5 12h-3l-1 11h-4l-1-11h-3z" fill="#f5b400" stroke="#7a5a00" stroke-width="1.2" stroke-linejoin="round"/></svg></div>
   <div id="crosshair"></div>
   <div id="tourbar"><b>Escolha um pavimento ou ambiente</b> no painel · setas giram e olham · <b>roda do mouse</b> anda</div>
   <div id="mobile-controls" aria-label="Controles do tour virtual">
@@ -236,9 +252,9 @@ canvas{display:block}
     </div>
     <div class="mobile-actions">
       <button class="mobile-action" id="mob-run">Correr</button>
+      <button class="mobile-action" id="mob-exit">Sair</button>
       <button class="mobile-action" id="mob-ocultar">Ocultar</button>
       <button class="mobile-action" id="mob-mostrar">Mostrar tudo</button>
-      <button class="mobile-action" id="mob-exit">Sair</button>
     </div>
   </div>
   <div id="click-info"></div>
@@ -33929,11 +33945,12 @@ let categories = {}; // nome categoria -> {color, meshes:[], el}
 const catPalette = ["#e08a4b","#5b9bd5","#70ad47","#c55a5a","#8a6bc9","#4bb3a8","#c9a04b","#a35bb0","#6b8fc9","#c96b8f","#7fae5c","#5c7fae"];
 let catColorIdx = 0;
 
+const CAT_MAP = (function(){ try { return {}; } catch(e){ return {}; } })();
 function parseCategory(name){
   if(!name) return "Sem categoria";
   const m = name.match(/^(.*?)[\s_]*<\d+[\s_]+(.*?)<?$/);
-  if(m) return m[1].replace(/_/g,' ').trim();
-  return name.replace(/_/g,' ').trim();
+  const bruto = (m ? m[1] : name).replace(/_/g,' ').trim();
+  return CAT_MAP[bruto] || CAT_MAP[(m ? m[1] : name).trim()] || bruto;
 }
 
 // o GLTFLoader costuma botar o nome descritivo (com o padrao "Categoria <id Tipo<")
@@ -34256,7 +34273,6 @@ function isTetoTour(mesh){
 function meshPassesFloor(mesh){
   if(!selectedFloor) return true;
   if(isTetoTour(mesh)) return true;
-  if(mesh.userData.levelId) return String(mesh.userData.levelId)===String(selectedFloor.id);
   const b=mesh.userData.worldBox || new THREE.Box3().setFromObject(mesh);
   return b.max.y>=selectedFloor.minY && b.min.y<=selectedFloor.maxY;
 }
@@ -34290,6 +34306,21 @@ function applyLevelScope(){
   frameBox(modelBox, 1.35);
 }
 
+/* faixa de corte de cada pavimento: do nivel - baixo ate o nivel + cima (metros) */
+const FAIXA={baixo:0.55,cima:2.90};
+try{const fx=JSON.parse(localStorage.getItem('tour_faixa')||'null'); if(fx&&isFinite(fx.baixo)&&isFinite(fx.cima)){FAIXA.baixo=fx.baixo;FAIXA.cima=fx.cima;}}catch(e){}
+function aplicarFaixa(){
+  const b=parseFloat(document.getElementById('faixa-baixo').value), c=parseFloat(document.getElementById('faixa-cima').value);
+  if(isFinite(b)) FAIXA.baixo=b; if(isFinite(c)) FAIXA.cima=c;
+  try{localStorage.setItem('tour_faixa',JSON.stringify(FAIXA));}catch(e){}
+  const nome=selectedFloor&&selectedFloor.name;
+  buildLevelPanel();
+  if(nome){const f=normalizedFloors().find(x=>x.name===nome); if(f){selectedFloor=f;
+    document.querySelectorAll('.level').forEach(btn=>{if(btn.textContent===nome)btn.classList.add('on');});
+    activateFloorCut(f);applyVisibilityFilters();}}
+}
+setTimeout(()=>{['faixa-baixo','faixa-cima'].forEach(id=>{const el=document.getElementById(id); if(!el) return;
+  el.value=(id==='faixa-baixo'?FAIXA.baixo:FAIXA.cima).toFixed(2); el.addEventListener('change',aplicarFaixa);});},0);
 function normalizedFloors(){
   let values=(Array.isArray(LEVELS)?LEVELS:[]).map(x=>({id:String(x.id||''),name:x.name||'Pavimento',elevation:Number(x.elevation),top:(x.top===null||x.top===undefined)?null:Number(x.top)})).filter(x=>Number.isFinite(x.elevation));
   if(!values.length){
@@ -34304,8 +34335,8 @@ function normalizedFloors(){
       id:x.id,
       name:x.name,
       floorY:y,
-      minY:Math.max(modelBox.min.y,y-0.50),
-      maxY:Math.min(modelBox.max.y,next)
+      minY:Math.max(modelBox.min.y,y-FAIXA.baixo),
+      maxY:Math.min(modelBox.max.y,y+FAIXA.cima)
     };
   }).filter(x=>x.maxY>x.minY);
 }
@@ -34321,7 +34352,7 @@ function activateFloorCut(floor){
     yMax:percentForAxis('y',floor.maxY),
     zMin:0,zMax:100
   });
-  floorCutByAssignedLevel=true;
+  floorCutByAssignedLevel=false;
   clipActive=true;
   updateCutInputs();
   applyClipping();
@@ -34532,23 +34563,32 @@ function linhaElemento(src){
   b.onclick=()=>{ if(hiddenEls.has(src)) hiddenEls.delete(src); else hiddenEls.add(src); applyVisibilityFilters(); buildBusca(); };
   return b;
 }
+function linhaCategoria(cat){
+  const c=categories[cat]; const off=!c.visible;
+  const b=document.createElement('button'); b.className='el'+(off?' off':'');
+  b.title=cat;
+  b.innerHTML=`<span class="en">${cat.replace(/^FamilyInstance\s*/,'')} (${c.meshes.length})</span><span class="eb">${off?'ativar':'desativar'}</span>`;
+  b.onclick=()=>{ c.visible=!c.visible; applyVisibilityFilters(); try{buildCatPanel();}catch(_){} buildBusca(); };
+  return b;
+}
 function buildBusca(){
   const box=document.getElementById('f-busca'); box.innerHTML='';
   if(searchTerm){
-    const hits=elementosUnicos().filter(n=>n.toLowerCase().includes(searchTerm) || nomeElemento(n).toLowerCase().includes(searchTerm));
-    hits.slice(0,80).forEach(n=>box.appendChild(linhaElemento(n)));
-    if(!hits.length) box.innerHTML='<div style="font-size:11px;color:var(--tx3);padding:4px">Nada encontrado.</div>';
-    else if(hits.length>80) box.insertAdjacentHTML('beforeend',`<div style="font-size:11px;color:var(--tx3);padding:4px">+${hits.length-80} … refine a busca</div>`);
+    const hits=Object.keys(categories).filter(n=>n.toLowerCase().includes(searchTerm));
+    hits.slice(0,80).forEach(n=>box.appendChild(linhaCategoria(n)));
+    if(!hits.length) box.innerHTML='<div style="font-size:11px;color:var(--tx3);padding:4px">Nenhuma categoria encontrada.</div>';
   }
   const oc=document.getElementById('f-ocultos'); oc.innerHTML='';
-  if(!hiddenEls.size) oc.innerHTML='<div style="font-size:11px;color:var(--tx3);padding:4px">Nenhum.</div>';
+  const ocultas=Object.keys(categories).filter(n=>!categories[n].visible);
+  if(!ocultas.length && !hiddenEls.size) oc.innerHTML='<div style="font-size:11px;color:var(--tx3);padding:4px">Nenhum.</div>';
+  ocultas.sort().forEach(n=>oc.appendChild(linhaCategoria(n)));
   [...hiddenEls].sort().forEach(n=>oc.appendChild(linhaElemento(n)));
 }
 document.getElementById('q').addEventListener('input', e=>{
   searchTerm=e.target.value.trim().toLowerCase();
   buildBusca();
 });
-document.getElementById('btn-hid-all').onclick=()=>{ hiddenEls.clear(); applyVisibilityFilters(); buildBusca(); };
+document.getElementById('btn-hid-all').onclick=()=>{ hiddenEls.clear(); Object.values(categories).forEach(c=>{c.visible=true;}); applyVisibilityFilters(); try{buildCatPanel();}catch(_){} buildBusca(); };
 setTimeout(buildBusca, 0);
 
 /* ---------- vistas rapidas ---------- */
@@ -34629,13 +34669,13 @@ function enterTour(){
 }
 function exitTour(){
   tourMode = false;
-  try{ tourSolto = false; ocultarModo = false; document.getElementById('mob-ocultar').classList.remove('on'); }catch(err){}
   document.getElementById('sw-tour').classList.remove('on');
   document.getElementById('tourbar').classList.remove('show');
   document.getElementById('crosshair').classList.remove('show');
   document.getElementById('mobile-controls').classList.remove('show');
   fps.fwd = fps.back = fps.left = fps.right = fps.turnL = fps.turnR = fps.lookU = fps.lookD = fps.run = false; fps.walk = 0;
   document.getElementById('mob-run').classList.remove('on');
+  try{ tourSolto = false; ocultarModo = false; document.getElementById('mob-ocultar').classList.remove('on'); }catch(err){}
   if(document.pointerLockElement) document.exitPointerLock();
   camera.fov = 55;
   camera.updateProjectionMatrix();
@@ -34694,6 +34734,7 @@ document.getElementById('mob-mostrar').addEventListener('click', ev=>{
   try{ buildCatPanel(); }catch(err){}
   applyVisibilityFilters(); buildBusca();
 });
+
 document.addEventListener('mousemove', e=>{
   if(!tourMode) return;
   if(document.pointerLockElement){
@@ -34812,15 +34853,177 @@ function tourStep(dt){
   camera.lookAt(look);
 }
 
+
+/* ---------- bonequinho (arrastar para entrar no tour) e mini planta ---------- */
+const MINI_LAYER = 1;
+const MINI_RAIO = 9;
+const miniCam = new THREE.OrthographicCamera(-10,10,10,-10,0.1,2000);
+miniCam.layers.enable(0); miniCam.layers.enable(MINI_LAYER);
+miniCam.up.set(0,0,-1);
+const miniBox = new THREE.Box3();
+let miniFloorY = 0;
+// seta de posicao
+const miniSeta = (()=>{
+  const sh = new THREE.Shape(); sh.moveTo(0,0.55); sh.lineTo(0.35,-0.35); sh.lineTo(0,-0.15); sh.lineTo(-0.35,-0.35); sh.closePath();
+  const g = new THREE.ShapeGeometry(sh); g.rotateX(-Math.PI/2); g.scale(1,1,-1);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({color:0xe8452c, depthTest:false, side:THREE.DoubleSide}));
+  m.renderOrder = 999; m.layers.set(MINI_LAYER); m.visible=false; scene.add(m); return m;
+})();
+// hachura do ambiente atual
+function texturaHachura(){
+  const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getContext('2d');
+  x.fillStyle='rgba(224,138,75,0.25)'; x.fillRect(0,0,64,64);
+  x.strokeStyle='rgba(224,138,75,0.95)'; x.lineWidth=5;
+  for(let i=-64;i<128;i+=16){ x.beginPath(); x.moveTo(i,64); x.lineTo(i+64,0); x.stroke(); }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+const miniHach = new THREE.Mesh(new THREE.PlaneGeometry(1,1),
+  new THREE.MeshBasicMaterial({map:texturaHachura(), transparent:true, depthTest:false, side:THREE.DoubleSide}));
+miniHach.rotation.x = -Math.PI/2; miniHach.renderOrder=998; miniHach.layers.set(MINI_LAYER); miniHach.visible=false; scene.add(miniHach);
+const miniCorte = [new THREE.Plane(new THREE.Vector3(0,-1,0), 0)];
+
+function andarDaAltura(y){
+  const fl = normalizedFloors(); let best=null;
+  fl.forEach(f=>{ if(f.floorY <= y+0.30 && (!best || f.floorY>best.floorY)) best=f; });
+  return best || fl[0] || null;
+}
+function ambienteEm(p){
+  let best=null, area=1e9;
+  SPACES.forEach(sp=>{
+    const b=roomBoxFor(sp);
+    if(p.x>=b.min.x && p.x<=b.max.x && p.z>=b.min.z && p.z<=b.max.z && p.y>=b.min.y && p.y<=b.max.y+0.5){
+      const a=(b.max.x-b.min.x)*(b.max.z-b.min.z); if(a<area){area=a;best=sp;}
+    }
+  });
+  return best;
+}
+function prepararMini(){
+  miniBox.makeEmpty();
+  allMeshes.forEach(m=>{ if(m.visible) miniBox.union(m.userData.worldBox||new THREE.Box3().setFromObject(m)); });
+  if(miniBox.isEmpty()) miniBox.copy(modelBox);
+  miniFloorY = selectedFloor ? selectedFloor.floorY : fps.pos.y-1.65;
+}
+function atualizarMini(){
+  const show = tourMode;
+  miniSeta.visible = show; miniHach.visible = false;
+  document.getElementById('mini').classList.toggle('show', show);
+  if(!show) return;
+  miniSeta.position.set(fps.pos.x, miniFloorY+1.0, fps.pos.z);
+  miniSeta.rotation.y = fps.yaw;
+  const sp = ambienteEm(fps.pos);
+  if(sp){
+    const b=roomBoxFor(sp);
+    miniHach.scale.set(b.max.x-b.min.x, b.max.z-b.min.z, 1);
+    miniHach.position.set((b.min.x+b.max.x)/2, miniFloorY+1.1, (b.min.z+b.max.z)/2);
+    miniHach.visible = true;
+    document.getElementById('mini-nome').textContent = sp.name;
+  } else document.getElementById('mini-nome').textContent = selectedFloor ? selectedFloor.name : '';
+}
+function desenharMini(){
+  if(!tourMode || miniBox.isEmpty()) return;
+  const el=document.getElementById('mini'); const r=el.getBoundingClientRect(); const v=renderer.domElement.getBoundingClientRect();
+  const w=r.width, h=r.height-18, x=r.left-v.left, yb=v.bottom-r.bottom;
+  if(w<20||h<20) return;
+  // planta centrada no visitante, mostrando uns 18 m em volta
+  const cx=fps.pos.x, cz=fps.pos.z;
+  let sx=MINI_RAIO, sz=MINI_RAIO;
+  if(w>h) sx=sz*w/h; else sz=sx*h/w;
+  miniSeta.scale.setScalar(MINI_RAIO*0.2);
+  miniCam.left=-sx; miniCam.right=sx; miniCam.top=sz; miniCam.bottom=-sz; miniCam.updateProjectionMatrix();
+  miniCam.position.set(cx, miniFloorY+50, cz); miniCam.lookAt(cx, miniFloorY, cz);
+  miniCorte[0].constant = miniFloorY+1.25;   // corta a planta a 1,25 m, como planta baixa
+  const salva = renderer.clippingPlanes; const cor=new THREE.Color(); renderer.getClearColor(cor); const alfa=renderer.getClearAlpha();
+  renderer.clippingPlanes = miniCorte;
+  renderer.setScissorTest(true);
+  renderer.setViewport(x, yb, w, h); renderer.setScissor(x, yb, w, h);
+  renderer.setClearColor(0xf4f1ea, 1); renderer.clear();
+  renderer.render(scene, miniCam);
+  renderer.setScissorTest(false);
+  renderer.clippingPlanes = salva;
+  const W=renderer.domElement.clientWidth, H=renderer.domElement.clientHeight;
+  renderer.setViewport(0,0,W,H); renderer.setClearColor(cor, alfa);
+}
+
+// entrar no tour num ponto (chamado ao soltar o bonequinho)
+function entrarTourNoPonto(p){
+  const fl = andarDaAltura(p.y);
+  if(fl && (!selectedFloor || selectedFloor.id!==fl.id)){
+    selectedFloor = fl;
+    document.querySelectorAll('.level').forEach(b=>b.classList.toggle('on', b.textContent===fl.name));
+    activateFloorCut(fl); applyVisibilityFilters();
+  }
+  const fy = fl ? fl.floorY : p.y;
+  const sp = ambienteEm(new THREE.Vector3(p.x, fy+1.0, p.z));
+  tourMode = true; tourDragFallback = false;
+  document.getElementById('sw-tour').classList.add('on');
+  document.getElementById('tourbar').classList.add('show');
+  document.getElementById('crosshair').classList.add('show');
+  document.getElementById('mobile-controls').classList.add('show');
+  fps.yaw = orbit.theta; fps.pitch = 0;
+  fps.pos.set(p.x, fy+1.65, p.z);
+  applyVisibilityFilters(); applyClipping();
+  camera.position.copy(fps.pos); tourStep(0);
+  prepararMini();
+  showTourInstructions("<b>"+(sp?sp.name:(fl?fl.name:'Tour'))+"</b> · ◀ ▶ giram · ▲ ▼ olham · <b>roda do mouse</b> ou <b>W/S</b> andam · <b>ESC</b> sai");
+  requestTourLock();
+}
+(function(){
+  const peg=document.getElementById('pegman'); if(!peg) return;
+  let arrastando=false, fantasma=null;
+  peg.addEventListener('pointerdown', e=>{
+    if(tourMode) return;
+    e.preventDefault(); e.stopPropagation(); arrastando=true;
+    fantasma=peg.cloneNode(true); fantasma.id='pegman-fantasma'; document.body.appendChild(fantasma);
+    fantasma.style.left=(e.clientX-14)+'px'; fantasma.style.top=(e.clientY-40)+'px';
+    try{ peg.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  peg.addEventListener('pointermove', e=>{
+    if(!arrastando||!fantasma) return;
+    fantasma.style.left=(e.clientX-14)+'px'; fantasma.style.top=(e.clientY-40)+'px';
+  });
+  const soltar = e=>{
+    if(!arrastando) return; arrastando=false;
+    if(fantasma){ fantasma.remove(); fantasma=null; }
+    const rect=renderer.domElement.getBoundingClientRect();
+    if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom) return;
+    const ndc=new THREE.Vector2(((e.clientX-rect.left)/rect.width)*2-1, -((e.clientY-rect.top)/rect.height)*2+1);
+    raycaster.setFromCamera(ndc, camera);
+    const vis=allMeshes.filter(m=>m.visible);
+    const hits=raycaster.intersectObjects(vis,false).filter(h=>!h.object.material.transparent || h.object.material.opacity>0.5);
+    // prefere a superficie horizontal (piso) mais alta atingida
+    if(selectedFloor){
+      const pl=new THREE.Plane(new THREE.Vector3(0,1,0), -selectedFloor.floorY); const pt=new THREE.Vector3();
+      if(raycaster.ray.intersectPlane(pl,pt)){ pt.y=selectedFloor.floorY+0.05; entrarTourNoPonto(pt); }
+      return;
+    }
+    let hit=hits.find(h=>h.face && Math.abs(h.face.normal.clone().transformDirection(h.object.matrixWorld).y)>0.7) || hits[0];
+    if(!hit){
+      const fy = selectedFloor ? selectedFloor.floorY : modelBox.min.y;
+      const pl=new THREE.Plane(new THREE.Vector3(0,1,0), -fy); const pt=new THREE.Vector3();
+      if(!raycaster.ray.intersectPlane(pl,pt)) return; entrarTourNoPonto(pt); return;
+    }
+    entrarTourNoPonto(hit.point.clone());
+  };
+  peg.addEventListener('pointerup', soltar);
+  peg.addEventListener('pointercancel', ()=>{ arrastando=false; if(fantasma){fantasma.remove();fantasma=null;} });
+})();
+
 /* ---------- loop ---------- */
 let last = performance.now();
+let miniPronto = false, miniAndar = '';
 function animate(){
   requestAnimationFrame(animate);
   const now = performance.now();
   const dt = Math.min(0.05, (now-last)/1000);
   last = now;
   if(tourMode) tourStep(dt);
+  document.body.classList.toggle('tour-on', tourMode);
+  const _fa=selectedFloor?selectedFloor.id:'';
+  if(tourMode && (!miniPronto || miniAndar!==_fa)){ prepararMini(); miniPronto=true; miniAndar=_fa; }
+  if(!tourMode) miniPronto=false;
+  atualizarMini();
   renderer.render(scene, camera);
+  desenharMini();
 }
 animate();
 </script>
